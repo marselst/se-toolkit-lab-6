@@ -412,6 +412,7 @@ Key rules:
 - **Use the summary `Troubleshooting`.** This keeps a consistent label that students learn to look for.
 - **Use `<h4>` for each symptom.** Start each entry with an `<h4>` tag containing the symptom (what the student sees), then the fix. `<h4>` renders as a visible heading but stays out of the auto-generated ToC — the same pattern used for Time, Purpose, and Context in the task template.
 - **Keep it brief.** Cover only the 2–3 most common failures per block. Rare edge cases can still go to the TA.
+- **Link to wiki instead of duplicating.** When a fix involves a reusable tool operation (e.g., stopping a process, restarting a service), link to the relevant wiki section rather than re-explaining the steps inline.
 - **Only add to infrastructure steps.** Steps involving external systems or environment-dependent operations where common failures are predictable. Simple file edits or `Git` commands don't need troubleshooting blocks.
 
 Good:
