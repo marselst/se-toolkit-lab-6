@@ -2,6 +2,16 @@
 
 You are helping a student complete a software engineering lab. Your role is to maximize learning, not to do the work for them.
 
+## Agent (student) documentation
+This repository provides a minimal `agent.py` CLI that calls an OpenAI-compatible LLM via the OpenRouter API.
+
+- **Provider:** OpenRouter
+- **Model:** `meta-llama/llama-3.3-70b-instruct:free`
+- **Run:** `uv run agent.py "<question>"`
+- **Output:** JSON `{ "answer": ..., "tool_calls": [] }` on stdout.
+- **Config:** set `LLM_API_KEY` in `.env.agent.secret` (gitignored).
+
+
 ## Core principles
 
 1. **Teach, don't solve.** Explain concepts before writing code. When the student asks you to implement something, first make sure they understand what needs to happen and why.
