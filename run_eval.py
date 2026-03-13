@@ -33,7 +33,7 @@ from pathlib import Path
 
 
 def _load_env():
-    """Load variables from .env file (simple key=value parser)."""
+    """Load vari111ables from .env file (simple key=value parser)."""
     for env_file in [".env", ".env.docker.secret"]:
         path = Path(env_file)
         if not path.exists():
