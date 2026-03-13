@@ -96,3 +96,60 @@ def test_agent_answer_is_not_hardcoded():
 
     # Answers should be different for different questions
     assert answers[0] != answers[1]
+
+
+@pytest.mark.skipif(
+    not os.getenv("LLM_API_KEY"),
+    reason="LLM_API_KEY is not set; skipping LLM integration test",
+)
+def test_agent_merge_conflict_uses_read_file():
+    """Test that asking about merge conflicts uses read_file and references git-workflow.md."""
+    proc = subprocess.run(
+        [sys.executable, "agent.py", "How do you resolve a merge conflict?"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, f"agent.py exited non-zero: {proc.stderr}"
+
+    data = json.loads(proc.stdout.strip())
+    
+    # Should have required fields
+    assert "answer" in data
+    assert "source" in data
+    assert "tool_calls" in data
+    
+    # Should use read_file tool
+    tool_names = [tc["tool"] for tc in data["tool_calls"]]
+    assert "read_file" in tool_names, "Expected read_file to be called"
+    
+    # Source should reference git-workflow.md
+    assert "git-workflow.md" in data["source"], f"Expected git-workflow.md in source, got: {data['source']}"
+
+
+@pytest.mark.skipif(
+    not os.getenv("LLM_API_KEY"),
+    reason="LLM_API_KEY is not set; skipping LLM integration test",
+)
+def test_agent_wiki_files_uses_list_files():
+    """Test that asking about wiki files uses list_files tool."""
+    proc = subprocess.run(
+        [sys.executable, "agent.py", "What files are in the wiki?"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, f"agent.py exited non-zero: {proc.stderr}"
+
+    data = json.loads(proc.stdout.strip())
+    
+    # Should have required fields
+    assert "answer" in data
+    assert "source" in data
+    assert "tool_calls" in data
+    
+    # Should use list_files tool
+    tool_names = [tc["tool"] for tc in data["tool_calls"]]
+    assert "list_files" in tool_names, "Expected list_files to be called"
