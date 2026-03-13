@@ -3,13 +3,103 @@
 You are helping a student complete a software engineering lab. Your role is to maximize learning, not to do the work for them.
 
 ## Agent (student) documentation
-This repository provides a minimal `agent.py` CLI that calls an OpenAI-compatible LLM via the OpenRouter API.
+This repository provides a `agent.py` CLI that calls an OpenAI-compatible LLM via the OpenRouter API with documentation tools.
 
 - **Provider:** OpenRouter
 - **Model:** `meta-llama/llama-3.3-70b-instruct:free`
 - **Run:** `uv run agent.py "<question>"`
-- **Output:** JSON `{ "answer": ..., "tool_calls": [] }` on stdout.
+- **Output:** JSON `{ "answer": ..., "source": ..., "tool_calls": [...] }` on stdout.
 - **Config:** set `LLM_API_KEY` in `.env.agent.secret` (gitignored).
+
+## Tools
+
+The agent has two tools to navigate the project documentation:
+
+### `read_file`
+
+Read a file from the project repository.
+
+**Parameters:**
+- `path` (string, required) — Relative path from project root (e.g., `wiki/git-workflow.md`)
+
+**Returns:** File contents as a string, or an error message if the file doesn't exist.
+
+**Security:** The tool rejects paths containing `..` to prevent reading files outside the project directory.
+
+### `list_files`
+
+List files and directories at a given path.
+
+**Parameters:**
+- `path` (string, required) — Relative directory path from project root (e.g., `wiki`)
+
+**Returns:** Newline-separated listing of entries, or an error message.
+
+**Security:** The tool rejects paths containing `..` to prevent listing directories outside the project directory.
+
+## Agentic Loop
+
+The agent implements an agentic loop that allows the LLM to decide which tools to call:
+
+```
+Question ──▶ LLM ──▶ tool call? ──yes──▶ execute tool ──▶ back to LLM
+                         │
+                         no
+                         │
+                         ▼
+                    JSON output
+```
+
+**Algorithm:**
+
+1. Send the user's question + system prompt + tool definitions to the LLM.
+2. If the LLM responds with `tool_calls`:
+   - Execute each tool function with the provided arguments.
+   - Append results as `tool` role messages to the conversation history.
+   - Go back to step 1.
+3. If the LLM responds with a text message (no tool calls):
+   - This is the final answer.
+   - Extract the `answer` and `source` fields.
+   - Output JSON and exit.
+4. If 10 tool calls are reached, stop looping and provide the best available answer.
+
+**Maximum tool calls:** 10 per question.
+
+## System Prompt Strategy
+
+The system prompt instructs the LLM to:
+
+1. Use `list_files` to discover relevant files in the `wiki/` directory.
+2. Use `read_file` to read the contents of files that might contain the answer.
+3. Always include a `source` field with the format `path/to/file.md#section-anchor`.
+4. Not fabricate sources — only reference files that were actually read.
+5. Be concise and direct in answers.
+
+## Output Format
+
+```json
+{
+  "answer": "Edit the conflicting file, choose which changes to keep, then stage and commit.",
+  "source": "wiki/git-workflow.md#resolving-merge-conflicts",
+  "tool_calls": [
+    {
+      "tool": "list_files",
+      "args": {"path": "wiki"},
+      "result": "git-workflow.md\n..."
+    },
+    {
+      "tool": "read_file",
+      "args": {"path": "wiki/git-workflow.md"},
+      "result": "..."
+    }
+  ]
+}
+```
+
+**Fields:**
+- `answer` (string, required) — The LLM's answer to the question.
+- `source` (string, required) — Reference to the wiki section (e.g., `wiki/git-workflow.md#resolving-merge-conflicts`).
+- `tool_calls` (array, required) — All tool calls made during the agentic loop. Each entry has `tool`, `args`, and `result`.
 
 
 ## Core principles
