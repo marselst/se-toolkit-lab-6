@@ -285,15 +285,17 @@ You have access to three tools:
 
 When answering questions, choose the right tool:
 - For wiki/documentation questions: use `list_files` to discover files, then `read_file` to read them
+  - Search for relevant files by keywords (e.g., "swagger" for Swagger UI, "docker" for Docker, "git" for Git)
+  - Read multiple files if needed to find the complete answer
 - For system facts (framework, ports, status codes, architecture): use `read_file` to read source code files
 - For data queries (item count, scores, analytics, completion rates): use `query_api`
 
 Always include a `source` field in your final answer:
-- For wiki questions: use format `path/to/file.md#section-anchor`
+- For wiki questions: use format `wiki/filename.md#section-anchor`
+  - The section anchor is the heading that contains the answer (lowercase, hyphens instead of spaces)
+  - Example: wiki/swagger.md#authorize-in-swagger-ui
 - For source code questions: use format `path/to/file.py:function_or_class`
 - For API data questions: use format `API: /endpoint/path`
-
-The section anchor should be the markdown heading that contains the answer (lowercase, hyphens instead of spaces).
 
 Do not make up sources - only reference files or endpoints you have actually read or queried.
 Be concise and direct in your answers.
@@ -329,16 +331,16 @@ def execute_tool_call(tool_call) -> dict:
     }
 
 
-def extract_source_from_answer(answer: str, messages: list) -> str:
+def extract_source_from_answer(answer: str, messages: list, all_tool_calls: list) -> str:
     """
-    Try to extract a source reference from the answer or messages.
+    Try to extract a source reference from the answer, messages, or tool calls.
     
     Looks for patterns like:
     - wiki/filename.md or wiki/filename.md#section
     - backend/...py or other source files
     - API: /endpoint/path
     """
-    # Pattern to match wiki file references
+    # Pattern to match wiki file references (more comprehensive)
     wiki_pattern = r'wiki/[\w\-]+\.md(?:#[\w\-]+)?'
     
     # Pattern to match API endpoints
@@ -367,17 +369,42 @@ def extract_source_from_answer(answer: str, messages: list) -> str:
     if match:
         return match.group(0)
     
-    # Search in tool results
+    # Search in tool calls - this is more reliable
+    for tc in all_tool_calls:
+        tool = tc.get("tool", "")
+        args = tc.get("args", {})
+        path = args.get("path", "") if isinstance(args, dict) else ""
+        
+        if tool == "read_file" and path:
+            # For read_file, use the path that was read
+            # Check if it's a wiki file
+            if path.endswith(".md"):
+                if not path.startswith("wiki/"):
+                    return f"wiki/{path}"
+                return path
+            # For Python files, return as is
+            if path.endswith(".py"):
+                return path
+        
+        if tool == "query_api" and path:
+            return f"API: {path}"
+        
+        if tool == "list_files" and path:
+            # For list_files, return a wiki path if listing wiki
+            if path == "wiki":
+                return "wiki/"
+    
+    # Search in tool results content as fallback
     for msg in messages:
         if msg.get("role") == "tool" and "content" in msg:
             content = msg["content"]
             
-            # Check API pattern
+            # Check API pattern in content
             match = re.search(api_pattern, content, re.IGNORECASE)
             if match:
                 return match.group(0).strip()
             
-            # Check wiki pattern
+            # Check wiki pattern in content
             match = re.search(wiki_pattern, content, re.IGNORECASE)
             if match:
                 source = match.group(0).lower()
@@ -471,10 +498,10 @@ def main():
             # No tool calls - this is the final answer
             print("[DEBUG] No tool calls, extracting final answer", file=sys.stderr)
             answer = response_message.get("content", "")
-            
+
             # Extract source from answer
-            source = extract_source_from_answer(answer, messages)
-            
+            source = extract_source_from_answer(answer, messages, all_tool_calls)
+
             # Output result as JSON
             result = {
                 "answer": answer,
@@ -518,17 +545,17 @@ def main():
         "role": "system",
         "content": "You have reached the maximum number of tool calls. Please provide your best answer based on the information you have gathered. Include a source reference."
     })
-    
+
     try:
         data = call_llm(messages, api_key, api_base, model)
         response_message = data["choices"][0]["message"]
         answer = response_message.get("content", "")
-        source = extract_source_from_answer(answer, messages)
+        source = extract_source_from_answer(answer, messages, all_tool_calls)
     except Exception:
         # Fallback: use last known information
         answer = "Unable to complete the request within tool call limits."
         source = "wiki/unknown.md"
-    
+
     result = {
         "answer": answer,
         "source": source,
