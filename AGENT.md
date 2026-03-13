@@ -37,6 +37,23 @@ List files and directories at a given path.
 
 **Security:** The tool rejects paths containing `..` to prevent listing directories outside the project directory.
 
+### `query_api`
+
+Call the deployed backend API to get system information or query data.
+
+**Parameters:**
+- `method` (string, required) — HTTP method (GET, POST, PUT, DELETE, PATCH)
+- `path` (string, required) — API path (e.g., `/items/`, `/analytics/completion-rate?lab=lab-01`)
+- `body` (string, optional) — JSON request body for POST/PUT/PATCH requests
+
+**Returns:** JSON string with `status_code` and `body` fields, or an error message.
+
+**Authentication:** Uses `LMS_API_KEY` from `.env.docker.secret`, passed in the `X-API-Key` header.
+
+**API Base URL:** Configured via `AGENT_API_BASE_URL` environment variable (default: `http://localhost:42002`).
+
+**Important:** `LMS_API_KEY` (backend API key) is different from `LLM_API_KEY` (LLM provider key). Do not confuse them.
+
 ## Agentic Loop
 
 The agent implements an agentic loop that allows the LLM to decide which tools to call:
@@ -69,11 +86,21 @@ Question ──▶ LLM ──▶ tool call? ──yes──▶ execute tool ─�
 
 The system prompt instructs the LLM to:
 
-1. Use `list_files` to discover relevant files in the `wiki/` directory.
-2. Use `read_file` to read the contents of files that might contain the answer.
-3. Always include a `source` field with the format `path/to/file.md#section-anchor`.
-4. Not fabricate sources — only reference files that were actually read.
-5. Be concise and direct in answers.
+1. **Choose the right tool for the question type:**
+   - For wiki/documentation questions: use `list_files` to discover files, then `read_file` to read them
+   - For system facts (framework, ports, status codes, architecture): use `read_file` to read source code files
+   - For data queries (item count, scores, analytics, completion rates): use `query_api`
+
+2. **Always include a `source` field** with the appropriate format:
+   - For wiki questions: `path/to/file.md#section-anchor`
+   - For source code questions: `path/to/file.py:function_or_class`
+   - For API data questions: `API: /endpoint/path`
+
+3. **Not fabricate sources** — only reference files or endpoints that were actually read or queried.
+
+4. **Be concise and direct** in answers.
+
+5. **Admit when the answer cannot be found** rather than making up information.
 
 ## Output Format
 
@@ -96,9 +123,25 @@ The system prompt instructs the LLM to:
 }
 ```
 
+**Example with query_api:**
+
+```json
+{
+  "answer": "There are 120 items in the database.",
+  "source": "API: /items/",
+  "tool_calls": [
+    {
+      "tool": "query_api",
+      "args": {"method": "GET", "path": "/items/"},
+      "result": "{\"status_code\": 200, \"body\": [...]}"
+    }
+  ]
+}
+```
+
 **Fields:**
 - `answer` (string, required) — The LLM's answer to the question.
-- `source` (string, required) — Reference to the wiki section (e.g., `wiki/git-workflow.md#resolving-merge-conflicts`).
+- `source` (string, required) — Reference to the source (wiki file, source code, or API endpoint).
 - `tool_calls` (array, required) — All tool calls made during the agentic loop. Each entry has `tool`, `args`, and `result`.
 
 
@@ -163,3 +206,56 @@ The system prompt instructs the LLM to:
 - `AGENT.md` — student's documentation of their agent architecture.
 - `.env.agent.secret` — LLM provider credentials (gitignored).
 - `.env.docker.secret` — backend API credentials (gitignored).
+
+## Lessons Learned (Task 3)
+
+### Tool Selection Strategy
+
+The key challenge in Task 3 was teaching the LLM to choose the right tool for each question type. Initially, the agent would sometimes use `read_file` for data queries that required `query_api`. This was fixed by:
+
+1. **Clearer tool descriptions**: Each tool's description now explicitly states when to use it.
+2. **Question type categorization**: The system prompt now categorizes questions into wiki, system facts, and data queries.
+
+### Authentication Handling
+
+A common mistake was confusing `LMS_API_KEY` (backend API key) with `LLM_API_KEY` (LLM provider key). The fix was to:
+- Read `LMS_API_KEY` from `.env.docker.secret`
+- Read `LLM_API_KEY` from `.env.agent.secret`
+- Add clear documentation about the difference
+
+### Error Handling
+
+The `query_api` tool needed robust error handling for:
+- Missing API key
+- Connection timeouts
+- Invalid JSON responses
+- HTTP errors (4xx, 5xx)
+
+Each error type returns a structured JSON response so the LLM can understand what went wrong and potentially retry or explain the issue to the user.
+
+### Source Extraction
+
+The `extract_source_from_answer` function was extended to handle three source types:
+- Wiki files: `wiki/file.md#section`
+- Source code: `backend/app/file.py:function`
+- API endpoints: `API: /path/to/endpoint`
+
+This ensures the `source` field is always populated correctly regardless of which tool was used.
+
+## Benchmark Results
+
+**Initial Score:** Run `uv run run_eval.py` after first implementation to get baseline.
+
+**Iteration Strategy:**
+1. Run eval and note failing questions
+2. Read feedback hints
+3. Adjust tool descriptions or system prompt
+4. Re-run and verify fix
+5. Repeat until passing
+
+**Final Score:** Will be updated after running the full benchmark.
+
+**Common Failures and Fixes:**
+- *Agent doesn't use query_api for data questions* → Improved system prompt to explicitly categorize data queries
+- *Missing source field* → Enhanced extract_source_from_answer to handle API endpoints
+- *API authentication errors* → Ensure LMS_API_KEY is loaded from correct env file

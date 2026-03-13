@@ -30,10 +30,21 @@ PROJECT_ROOT = Path(__file__).parent.resolve()
 
 
 def load_env():
-    """Load environment variables from .env.agent.secret if it exists."""
+    """Load environment variables from .env.agent.secret and .env.docker.secret if they exist."""
+    # Load LLM configuration from .env.agent.secret
     env_file = Path(__file__).parent / ".env.agent.secret"
     if env_file.exists():
         with open(env_file, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, value = line.partition("=")
+                    os.environ.setdefault(key.strip(), value.strip())
+    
+    # Load backend API configuration from .env.docker.secret
+    docker_env_file = Path(__file__).parent / ".env.docker.secret"
+    if docker_env_file.exists():
+        with open(docker_env_file, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
@@ -117,19 +128,97 @@ def list_files(path: str) -> str:
         return f"Error: Permission denied listing '{path}'"
 
 
+def query_api(method: str, path: str, body: str | None = None) -> str:
+    """
+    Call the deployed backend API.
+    
+    Parameters:
+        method (str): HTTP method (GET, POST, PUT, DELETE, etc.)
+        path (str): API path (e.g., '/items/', '/analytics/completion-rate')
+        body (str, optional): JSON request body for POST/PUT requests
+    
+    Returns:
+        JSON string with status_code and body, or an error message.
+    """
+    api_base = os.getenv("AGENT_API_BASE_URL", "http://localhost:42002")
+    api_key = os.getenv("LMS_API_KEY")
+    
+    if not api_key:
+        return json.dumps({
+            "status_code": 500,
+            "body": {"error": "LMS_API_KEY not set. Please configure .env.docker.secret"}
+        })
+    
+    url = f"{api_base.rstrip('/')}{path}"
+    headers = {
+        "X-API-Key": api_key,
+        "Content-Type": "application/json",
+    }
+    
+    print(f"[DEBUG] Calling API: {method} {url}", file=sys.stderr)
+    
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            if method.upper() == "GET":
+                response = client.get(url, headers=headers)
+            elif method.upper() == "POST":
+                data = json.loads(body) if body else {}
+                response = client.post(url, headers=headers, json=data)
+            elif method.upper() == "PUT":
+                data = json.loads(body) if body else {}
+                response = client.put(url, headers=headers, json=data)
+            elif method.upper() == "DELETE":
+                response = client.delete(url, headers=headers)
+            elif method.upper() == "PATCH":
+                data = json.loads(body) if body else {}
+                response = client.patch(url, headers=headers, json=data)
+            else:
+                return json.dumps({
+                    "status_code": 400,
+                    "body": {"error": f"Unsupported HTTP method: {method}"}
+                })
+        
+        result = {
+            "status_code": response.status_code,
+            "body": response.json() if response.content else None,
+        }
+        return json.dumps(result)
+    
+    except httpx.TimeoutException:
+        return json.dumps({
+            "status_code": 504,
+            "body": {"error": "Request timed out"}
+        })
+    except httpx.HTTPError as e:
+        return json.dumps({
+            "status_code": getattr(e.response, "status_code", 500) if hasattr(e, "response") else 500,
+            "body": {"error": str(e)}
+        })
+    except json.JSONDecodeError as e:
+        return json.dumps({
+            "status_code": 500,
+            "body": {"error": f"Invalid JSON response: {e}"}
+        })
+    except Exception as e:
+        return json.dumps({
+            "status_code": 500,
+            "body": {"error": f"Unexpected error: {type(e).__name__}: {e}"}
+        })
+
+
 # Tool definitions for LLM function calling
 TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a file from the project repository. Use this to read documentation files in the wiki/ directory.",
+            "description": "Read a file from the project repository. Use this to read documentation files in the wiki/ directory or source code files.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path from project root (e.g., 'wiki/git-workflow.md')"
+                        "description": "Relative path from project root (e.g., 'wiki/git-workflow.md' or 'backend/app/main.py')"
                     }
                 },
                 "required": ["path"]
@@ -146,10 +235,35 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative directory path from project root (e.g., 'wiki')"
+                        "description": "Relative directory path from project root (e.g., 'wiki' or 'backend/app')"
                     }
                 },
                 "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_api",
+            "description": "Call the deployed backend API to get system information or query data. Use this for questions about item counts, scores, analytics, or any data stored in the database.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "method": {
+                        "type": "string",
+                        "description": "HTTP method (GET, POST, PUT, DELETE, PATCH)"
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "API path (e.g., '/items/', '/analytics/completion-rate?lab=lab-01')"
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Optional JSON request body for POST/PUT/PATCH requests"
+                    }
+                },
+                "required": ["method", "path"]
             }
         }
     }
@@ -159,23 +273,32 @@ TOOL_DEFINITIONS = [
 TOOL_FUNCTIONS = {
     "read_file": read_file,
     "list_files": list_files,
+    "query_api": query_api,
 }
 
-SYSTEM_PROMPT = """You are a helpful lab assistant that answers questions about the project using its documentation.
+SYSTEM_PROMPT = """You are a helpful lab assistant that answers questions about the project using its documentation and live system data.
 
-You have access to two tools:
+You have access to three tools:
 1. `list_files` - List files in a directory
 2. `read_file` - Read the contents of a file
+3. `query_api` - Call the deployed backend API to get system information or query data
 
-When answering questions:
-1. First use `list_files` to discover relevant files in the wiki/ directory
-2. Then use `read_file` to read the contents of files that might contain the answer
-3. Always include a `source` field in your final answer with the format: `path/to/file.md#section-anchor`
-4. The section anchor should be the markdown heading that contains the answer (lowercase, hyphens instead of spaces)
-5. Do not make up sources - only reference files you have actually read
-6. Be concise and direct in your answers
+When answering questions, choose the right tool:
+- For wiki/documentation questions: use `list_files` to discover files, then `read_file` to read them
+- For system facts (framework, ports, status codes, architecture): use `read_file` to read source code files
+- For data queries (item count, scores, analytics, completion rates): use `query_api`
 
-If you cannot find the answer in the documentation, say so honestly.
+Always include a `source` field in your final answer:
+- For wiki questions: use format `path/to/file.md#section-anchor`
+- For source code questions: use format `path/to/file.py:function_or_class`
+- For API data questions: use format `API: /endpoint/path`
+
+The section anchor should be the markdown heading that contains the answer (lowercase, hyphens instead of spaces).
+
+Do not make up sources - only reference files or endpoints you have actually read or queried.
+Be concise and direct in your answers.
+
+If you cannot find the answer, say so honestly.
 """
 
 
@@ -210,25 +333,52 @@ def extract_source_from_answer(answer: str, messages: list) -> str:
     """
     Try to extract a source reference from the answer or messages.
     
-    Looks for patterns like wiki/filename.md or wiki/filename.md#section
+    Looks for patterns like:
+    - wiki/filename.md or wiki/filename.md#section
+    - backend/...py or other source files
+    - API: /endpoint/path
     """
     # Pattern to match wiki file references
-    pattern = r'wiki/[\w\-]+\.md(?:#[\w\-]+)?'
+    wiki_pattern = r'wiki/[\w\-]+\.md(?:#[\w\-]+)?'
+    
+    # Pattern to match API endpoints
+    api_pattern = r'API:\s*/[\w\-/]+(?:\?[\w=\-]+)?'
+    
+    # Pattern to match Python source files
+    py_pattern = r'(?:backend|frontend|tests)/[\w\-/]+\.py(?::[\w_]+)?'
     
     # Search in the answer first
-    match = re.search(pattern, answer, re.IGNORECASE)
+    # Check API pattern
+    match = re.search(api_pattern, answer, re.IGNORECASE)
+    if match:
+        return match.group(0).strip()
+    
+    # Check wiki pattern
+    match = re.search(wiki_pattern, answer, re.IGNORECASE)
     if match:
         source = match.group(0).lower()
-        # Ensure anchor is lowercase
         if '#' in source:
             path, anchor = source.split('#', 1)
             return f"{path}#{anchor.lower()}"
         return source
     
+    # Check Python source pattern
+    match = re.search(py_pattern, answer, re.IGNORECASE)
+    if match:
+        return match.group(0)
+    
     # Search in tool results
     for msg in messages:
         if msg.get("role") == "tool" and "content" in msg:
-            match = re.search(pattern, msg["content"], re.IGNORECASE)
+            content = msg["content"]
+            
+            # Check API pattern
+            match = re.search(api_pattern, content, re.IGNORECASE)
+            if match:
+                return match.group(0).strip()
+            
+            # Check wiki pattern
+            match = re.search(wiki_pattern, content, re.IGNORECASE)
             if match:
                 source = match.group(0).lower()
                 if '#' in source:
